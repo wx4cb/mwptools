@@ -49,7 +49,6 @@ public class MWPSettings : GLib.Object
     public uint  baudrate {get; set; default=57600;}
     public string mediap {get; private set;}
     public string heartbeat {get; private set;}
-    public double updint {get; private set; default=1.0;}
     public string atstart {get; private set;}
     public string atexit {get; private set;}
     public string? fctype {get; private set;}
@@ -100,6 +99,10 @@ public class MWPSettings : GLib.Object
     public double deltaspeed {get; set; default=0.0;}
     public int smartport_fuel  {get; set; default = 0;}
     public int speak_amps {get; set; default=0;}
+    public bool arming_speak {get; set; default=false;}
+    public uint max_radar { get; set; default=4; }
+//    public string radar_device {get; set; default=null;}
+
     public signal void settings_update (string s);
 
     public MWPSettings()
@@ -197,12 +200,6 @@ public class MWPSettings : GLib.Object
             fctype = settings.get_string ("fctype");
         if(s == null || s == "vlevels")
             vlevels = settings.get_string ("vlevels");
-        if(s == null || s == "update-interval")
-        {
-            updint = settings.get_double("update-interval");
-            if(updint > 0 && updint < 0.1)
-                updint = 0.1;
-        }
         if(s == null || s == "checkswitches")
             checkswitches = settings.get_boolean("checkswitches");
         if(s == null || s == "poll-timeout")
@@ -367,6 +364,21 @@ public class MWPSettings : GLib.Object
 
         if(s == null || s == "speak-amps")
             speak_amps = settings.get_enum("speak-amps");
+
+        if(s == null || s == "max-radar-slots")
+            max_radar =  settings.get_uint("max-radar-slots");
+
+        if(s == null || s == "arming-speak")
+            arming_speak  = settings.get_boolean("arming-speak");
+
+            /** CLI for now
+        if(s == null || s == "radar-device")
+        {
+            radar_device = settings.get_string("radar-device");
+            if (radar_device == "")
+                radar_device = null;
+        }
+            ***/
     }
 
     public void save_pane()

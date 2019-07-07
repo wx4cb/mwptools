@@ -108,6 +108,11 @@ public class OdoView : GLib.Object
     private Gtk.Label odo_ca2;
     private Gtk.Label odoalt_u;
     private Gtk.Button odoclose;
+
+    private Gtk.Label odoalt_tm;
+    private Gtk.Label odospeed_tm;
+    private Gtk.Label odorange_tm;
+
     private uint to = 15;
     private uint tid = 0;
     private bool visible = false;
@@ -128,6 +133,11 @@ public class OdoView : GLib.Object
         odo_ca2 = builder.get_object ("odo_ca2") as Gtk.Label;
         odoalt_u = builder.get_object ("odoalt_u") as Gtk.Label;
         odoclose = builder.get_object ("odoclose") as Gtk.Button;
+
+        odoalt_tm = builder.get_object ("odo_alt_time") as Gtk.Label;
+        odorange_tm = builder.get_object ("odo_rng_time") as Gtk.Label;
+        odospeed_tm = builder.get_object ("odo_spd_time") as Gtk.Label;
+
         dialog.set_transient_for(w);
         to = _to;
 
@@ -146,17 +156,40 @@ public class OdoView : GLib.Object
         odo_ca0.sensitive = odo_ca2.sensitive = odoamps.sensitive = state;
     }
 
+    private string format_when(uint at)
+    {
+        string lbl;
+        uint m,s;
+        if (at == 0)
+            lbl = "";
+        else
+        {
+            m = at / 60;
+            s = at % 60;
+            lbl = "%u:%02u".printf(m,s);
+        }
+        return lbl;
+    }
+
     public void display(Odostats o, bool autohide=false)
     {
+
         odotime.label = " %u:%02u ".printf(o.time / 60, o.time % 60);
         odospeed.label = "  %.1f ".printf(Units.speed(o.speed));
-        odospeed_u.label =  Units.speed_units();
+        odospeed_u.label = Units.speed_units();
+        odospeed_tm.label = format_when(o.spd_secs);
+
         ododist.label = "  %.0f ".printf(Units.distance(o.distance));
         ododist_u.label = Units.distance_units();
+
         odorange.label = "  %.0f ".printf(Units.distance(o.range));
         odorange_u.label = Units.distance_units();
+        odorange_tm.label = format_when(o.rng_secs);
+
         odoalt.label = "  %.0f ".printf(Units.distance(o.alt));
         odoalt_u.label = Units.distance_units();
+        odoalt_tm.label = format_when(o.alt_secs);
+
         if(o.amps > 0)
         {
             double odoA = o.amps/100.0;
@@ -290,6 +323,119 @@ public class TelemetryStats : GLib.Object
         }
     }
 }
+
+public class RadarView : Object
+{
+
+    public Gtk.Grid grid {get; private set;}
+    private Gtk.Label [,] rlab;
+    private Gtk.Dialog w;
+    private bool vis = false;
+    public const int MAXRADAR = 8;
+    private const int [] WIDTHS = {6, 16, 16, 10, 10, 10, 16 };
+    private uint maxradar;
+
+    public RadarView(Gtk.Builder builder, Gtk.Window _w, uint _maxradar=MAXRADAR)
+    {
+        maxradar = _maxradar;
+        rlab = new Gtk.Label[maxradar+1,7];
+        w = new Gtk.Dialog();
+        w.title = "Radar Data";
+        grid = new Gtk.Grid() ; // builder.get_object ("rv_grid") as Gtk.Grid;
+
+        add_row(0, 0, "Id");
+        add_row(0, 1, "Latitude");
+        add_row(0, 2, "Longitude");
+        add_row(0, 3, "Altitude");
+        add_row(0, 4, "Course");
+        add_row(0, 5, "Speed");
+        add_row(0, 6, "Status / lq");
+
+        for (var i = 0; i < maxradar; i++)
+        {
+            add_row(i+1,0, "# %c".printf(i+65));
+            for(var j = 1; j < 7; j++)
+                add_row(i+1, j, "");
+            clear_radar(i, true);
+        }
+
+        w.get_content_area().add(grid);
+        w.set_transient_for(_w);
+        w.delete_event.connect (() => {
+                show_or_hide();
+                return true;
+            });
+
+        w.close.connect (() => {
+                show_or_hide();
+            });
+
+    }
+
+    private void add_row(int row, int col, string? defval)
+    {
+        rlab[row,col] = new Gtk.Label("");
+        rlab[row,col].xalign = 0.0f;
+        rlab[row,col].width_chars = WIDTHS[col];
+
+        if (row == 0 || col == 0)
+        {
+            rlab[row,col].set_use_markup(true);
+            rlab[row,col].label = "<b>%s</b>".printf(defval);
+        }
+        else
+        {
+            rlab[row,col].label = defval;
+        }
+        grid.attach(rlab[row, col], col, row, 1, 1);
+    }
+
+    public void  update(RadarPlot r, bool dms)
+    {
+        string[] sts = {"Undefined", "Armed", "Hidden", "Stale"};
+        if(r.id < maxradar && vis)
+        {
+            int row = r.id + 1;
+           if(r.state != 0)
+            {
+                rlab[row, 1].label = PosFormat.lat(r.latitude,dms);
+                rlab[row, 2].label = PosFormat.lon(r.longitude,dms);
+                rlab[row, 3].label = "%.1f %s".printf(Units.distance(r.altitude),
+                                                      Units.distance_units());
+                rlab[row, 4].label = "%d °".printf(r.heading);
+                rlab[row, 5].label = "%.0f %s".printf(Units.speed(r.speed), Units.speed_units());
+            }
+            else
+            {
+                clear_radar(r.id, false);
+            }
+
+            if(r.state >= sts.length)
+                r.state = 0;
+            rlab[row,6].label = "%s / %u".printf(sts[r.state], r.lq);
+        }
+    }
+
+    public void clear_radar(uint8 id, bool all = true)
+    {
+        for(var k = 1; k < 6; k++)
+            rlab[id+1,k].label = "---";
+        if(all)
+            rlab[id+1,6].label = "Undefined / -";
+    }
+
+    public void show_or_hide()
+    {
+        if(vis)
+            w.hide();
+        else
+            w.show_all();
+
+        vis = !vis;
+    }
+
+}
+
 
 public class DirnBox : GLib.Object
 {
@@ -761,7 +907,7 @@ public class SetPosDialog : GLib.Object
     private Places.PosItem[] pls;
     private bool dms;
 
-    public signal void new_pos(double la, double lo);
+    public signal void new_pos(double la, double lo, int zoom);
 
     public SetPosDialog(Gtk.Builder builder,Gtk.Window? w=null)
     {
@@ -821,7 +967,11 @@ public class SetPosDialog : GLib.Object
                     }
                     glat = InputParser.get_latitude(t1);
                     glon = InputParser.get_longitude(t2);
-                    new_pos(glat, glon);
+                    var n = pcombo.get_active ();
+                    int zoom = -1;
+                    if(n > 0)
+                        zoom = pls[n].zoom;
+                    new_pos(glat, glon,zoom);
                 }
                 dialog.hide();
             });
@@ -1359,6 +1509,9 @@ public class NavStatus : GLib.Object
     public static bool ampsok {get; private set;}
     public static uint16 centiA {get; private set;}
     public static uint32 mah {get; private set;}
+    public static string arm_msg {get; private set;}
+    public static uint8 say_state {get; private set; default=0;}
+    public static string host_batt_status {get; private set;}
 
     private static string ls_state = null;
     private static string ls_action = null;
@@ -1379,6 +1532,13 @@ public class NavStatus : GLib.Object
         GPS = 2,
         BARO = 4,
         ELEV = 8
+    }
+
+    public enum SAY_WHAT
+    {
+        Test = 0,
+        Arm = 1,
+        Nav = 2
     }
 
     private uint8 spkamp = 0;
@@ -1432,6 +1592,11 @@ public class NavStatus : GLib.Object
         mahlabel.set_use_markup (true);
         volt_update("n/a",-1, 0f,true);
         grid.show_all();
+    }
+
+    public void set_audio_status(uint8 s)
+    {
+        say_state = s;
     }
 
     public void set_replay_mode(bool _replaying)
@@ -1489,7 +1654,8 @@ public class NavStatus : GLib.Object
 
             if((_n.nav_mode != xnmode) || (_n.nav_mode !=0 && _n.wp_number != xnwp))
             {
-                mt.message(AudioThread.Vox.NAV_STATUS,true);
+                if((NavStatus.say_state & SAY_WHAT.Nav) == SAY_WHAT.Nav)
+                    mt.message(AudioThread.Vox.NAV_STATUS,true);
             }
         }
 
@@ -1567,14 +1733,14 @@ public class NavStatus : GLib.Object
                     // only speak modes that are not in N-Frame
                 if(mt_voice)
                 {
-                    if(sp)
+                    if((NavStatus.say_state & SAY_WHAT.Nav) == SAY_WHAT.Nav)
                     {
-//                        MWPLog.message("SP mode %u\n", fmode);
-                        mt.message(AudioThread.Vox.SPORT_MODE,true);
+                        if(sp)
+                            mt.message(AudioThread.Vox.SPORT_MODE,true);
+                        else if ((xfmode > 0 && xfmode < 5) ||
+                                 xfmode == 8 || xfmode > 17)
+                            mt.message(AudioThread.Vox.LTM_MODE,true);
                     }
-                    else if ((xfmode > 0 && xfmode < 5) ||
-                        xfmode == 8 || xfmode > 17)
-                        mt.message(AudioThread.Vox.LTM_MODE,true);
                 }
             }
 
@@ -1794,27 +1960,24 @@ public class NavStatus : GLib.Object
     {
         fmode = _fmode;
         if(mt_voice)
-        {
-            mt.message(AudioThread.Vox.FMODE,true);
-        }
+            if((NavStatus.say_state & SAY_WHAT.Nav) == SAY_WHAT.Nav)
+                mt.message(AudioThread.Vox.FMODE,true);
     }
 
     public void update_duration(int _mins)
     {
         mins = _mins;
         if(mt_voice)
-        {
-            mt.message(AudioThread.Vox.DURATION);
-        }
+            if((NavStatus.say_state & SAY_WHAT.Nav) == SAY_WHAT.Nav)
+                mt.message(AudioThread.Vox.DURATION);
     }
 
     public void sats(uint8 nsats, bool urgent=false)
     {
         numsat = nsats;
         if(mt != null)
-        {
-            mt.message(AudioThread.Vox.MODSAT,urgent);
-        }
+            if((NavStatus.say_state & SAY_WHAT.Nav) == SAY_WHAT.Nav)
+                mt.message(AudioThread.Vox.MODSAT,urgent);
     }
 
     public void hw_failure(uint8 bad)
@@ -1830,46 +1993,51 @@ public class NavStatus : GLib.Object
         }
     }
 
+    public void host_power(string s)
+    {
+        host_batt_status = s;
+        mt.message(AudioThread.Vox.HOST_POWER);
+    }
+
+
     public void announce(uint8 mask)
     {
-        if(have_hdr)
+        if((NavStatus.say_state & SAY_WHAT.Nav) == SAY_WHAT.Nav)
         {
-            mt.message(AudioThread.Vox.HEADING);
-        }
-        if(((mask & SPK.GPS) == SPK.GPS) && have_cg)
-        {
-            mt.message(AudioThread.Vox.RANGE_BRG);
-        }
-        if((mask & SPK.ELEV) == SPK.ELEV)
-        {
-            mt.message(AudioThread.Vox.ELEVATION);
-        }
-        else if((mask & SPK.BARO) == SPK.BARO)
-        {
-            mt.message(AudioThread.Vox.BARO);
-        }
-        if((mask & SPK.Volts) == SPK.Volts && volts > 0.0)
-        {
-            mt.message(AudioThread.Vox.VOLTAGE);
-            if(MWPlanner.conf.speak_amps > 0)
+            if(have_hdr)
             {
-                if((MWPlanner.conf.speak_amps & 0x10) == 0x10 || !replaying)
+                mt.message(AudioThread.Vox.HEADING);
+            }
+            if(((mask & SPK.GPS) == SPK.GPS) && have_cg)
+            {
+                mt.message(AudioThread.Vox.RANGE_BRG);
+            }
+            if((mask & SPK.ELEV) == SPK.ELEV)
+            {
+                mt.message(AudioThread.Vox.ELEVATION);
+            }
+            else if((mask & SPK.BARO) == SPK.BARO)
+            {
+                mt.message(AudioThread.Vox.BARO);
+            }
+            if((mask & SPK.Volts) == SPK.Volts && volts > 0.0)
+            {
+                mt.message(AudioThread.Vox.VOLTAGE);
+                if(MWPlanner.conf.speak_amps > 0 && NavStatus.mah > 0)
                 {
-                    int rpi = (MWPlanner.conf.speak_amps & 0xf);
-                    if (rpi == 1 ||
-                        (rpi == 2 && (spkamp & 1) != 0) ||
-                        (rpi == 4 && spkamp == 3))
+                    if((MWPlanner.conf.speak_amps & 0x10) == 0x10 || !replaying)
                     {
-                        print("Speak amps %s %02x %d\n",
-                              replaying.to_string(),
-                              MWPlanner.conf.speak_amps,
-                              rpi);
-
-                        mt.message(AudioThread.Vox.MAH);
+                        int rpi = (MWPlanner.conf.speak_amps & 0xf);
+                        if (rpi == 1 ||
+                            (rpi == 2 && (spkamp & 1) != 0) ||
+                            (rpi == 4 && spkamp == 3))
+                        {
+                            mt.message(AudioThread.Vox.MAH);
+                        }
                     }
+                    spkamp = (spkamp + 1) % 4;
                 }
             }
-            spkamp = (spkamp + 1) % 4;
         }
     }
 
@@ -1878,15 +2046,25 @@ public class NavStatus : GLib.Object
         mt.message(AudioThread.Vox.AUDIO_TEST, true);
     }
 
+    public void arm_status(string s)
+    {
+        if((NavStatus.say_state & SAY_WHAT.Arm) == SAY_WHAT.Arm)
+        {
+            arm_msg = s;
+            mt.message(AudioThread.Vox.ARM_STATUS, true);
+        }
+    }
 
     public void alert_home_moved()
     {
-        mt.message(AudioThread.Vox.HOME_CHANGED, true);
+        if((NavStatus.say_state & SAY_WHAT.Nav) == SAY_WHAT.Nav)
+            mt.message(AudioThread.Vox.HOME_CHANGED, true);
     }
 
     public void gps_crit()
     {
-        mt.message(AudioThread.Vox.GPS_CRIT, true);
+        if((NavStatus.say_state & SAY_WHAT.Nav) == SAY_WHAT.Nav)
+            mt.message(AudioThread.Vox.GPS_CRIT, true);
     }
 
     public void cg_on()
@@ -1973,11 +2151,6 @@ public class NavStatus : GLib.Object
         mt.message(AudioThread.Vox.DONE);
         mt.thread.join ();
         mt = null;
-        if(efdin > 0)
-        {
-            Posix.close(efdin);
-            efdin = 0;
-        }
     }
 }
 
@@ -2003,6 +2176,8 @@ public class AudioThread : Object {
         HOME_CHANGED,
         AUDIO_TEST,
         SPORT_MODE,
+        ARM_STATUS,
+        HOST_POWER,
         MAH
     }
 
@@ -2096,8 +2271,14 @@ public class AudioThread : Object {
                     string s=null;
                     switch(c)
                     {
+                        case Vox.HOST_POWER:
+                            s = NavStatus.host_batt_status;
+                            break;
                         case Vox.AUDIO_TEST:
                             s = "MWP audio test, version %s".printf(MwpVers.id);
+                            break;
+                        case Vox.ARM_STATUS:
+                            s = NavStatus.arm_msg;
                             break;
                         case Vox.HW_OK:
                             s = "Sensors OK";

@@ -1,7 +1,12 @@
 #!/bin/sh
 ## Starting point for Ubuntu / Debian packages ...
 
-apt -y install libgdl-3-dev \
+
+CONF=$1
+CONFIRM=
+[ -n "$CONF" ] && CONFIRM=-y
+
+apt $CONFIRM install libgdl-3-dev \
     libchamplain-gtk-0.12-dev \
     libchamplain-0.12-dev \
     libclutter-1.0-dev \
@@ -17,6 +22,7 @@ apt -y install libgdl-3-dev \
     libvte-2.91-dev \
     libncurses5-dev
 
+
 ## For libvala-dev there may be valac version specific deb
 ## check the vala version with:
 ## valac --version
@@ -24,16 +30,19 @@ apt -y install libgdl-3-dev \
 ##  apt search libvala.\*-dev
 ## and install the current package
 ## e.g.
-# apt install libvala-0.36-dev
-# Current version for bionic is .040
-apt -y install libvala-0.40-dev
+# apt $CONFIRM install libvala-0.44-dev
 
 ## ruby version 2 or later
-apt -y install ruby ruby-json
 
 ## For some ARM boards, without full OpenGL, you may need
 ## egl1-mesa - this can also be handy for laptops
-apt -y install libegl1-mesa-dev
+
+apt $CONFIRM install ruby ruby-json
+
+## For some ARM boards, without full OpenGL, you may need
+
+# apt $CONFIRM install libegl1-mesa-dev
+
 ## (or something like that)
 
 ## if you want to use speech-dispatcher instead of espeak for voice
@@ -42,16 +51,18 @@ apt -y install libegl1-mesa-dev
 ## or (default)
 ## gsettings set org.mwptools.planner speech-api 'espeak'
 
-# apt -y install libspeechd-dev
+
+# apt $CONFIRM install libspeechd-dev
 
 ## for flite as the text to speech API
-# apt -y install flite flite1-dev
+# apt $CONFIRM install flite flite1-dev
 
 ## For plot-elevation.rb
-apt install gnuplot ruby-nokogiri
+apt $CONFIRM install gnuplot ruby-nokogiri
 
 ## To use KMZ as an overlay format, you need 'unzip
-#apt -y install unzip
+
+#apt $CONFIRM install unzip
 
 ## Shallow clone mwp ....
 # git clone --depth 1 https://github.com/stronnag/mwptools
@@ -70,7 +81,8 @@ make && sudo cp obj/blackbox_decode obj/blackbox_render /usr/local/bin/
 #
 ## cp ubuntu-deps.txt /tmp/ubuntu-deps.sh
 ## chmod +x /tmp/ubuntu-deps.sh
-## sudo /tmp/ubuntu-deps.sh
+## sudo /tmp/ubuntu-deps.sh # interactive confirmation required, or
+## sudo /tmp/ubuntu-deps.sh Y # no confirmation required.
 ##
 ## The default instruction only set up the master branch (in order in
 ## minimise the initial setup) .
