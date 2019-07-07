@@ -85,10 +85,13 @@ public struct Odostats
 {
     double speed;
     double distance;
-    uint time;
     double alt;
     double range;
     uint16 amps; // cenitamps
+    uint time;
+    uint alt_secs;
+    uint spd_secs;
+    uint rng_secs;
 }
 
 public struct VersInfo
@@ -165,7 +168,18 @@ public struct MavPOSDef
     uint8 set;
 }
 
-
+public struct RadarPlot
+{
+    uint8 id;
+    uint8 state;
+    double latitude;
+    double longitude;
+    double altitude;
+    uint16 heading;
+    double speed;
+    uint8 lq;
+    uint lasttick;
+}
 
 public class PosFormat : GLib.Object
 {
@@ -322,6 +336,7 @@ class MwpDockHelper : Object
     }
 }
 
+
 public class MWPlanner : Gtk.Application {
     private const uint MAXVSAMPLE=12;
 
@@ -354,6 +369,7 @@ public class MWPlanner : Gtk.Application {
     public static MWPSettings conf;
     private MWSerial msp;
     private MWSerial fwddev;
+    private MWSerial rdrdev;
     private Gtk.Button conbutton;
     private Gtk.ComboBoxText dev_entry;
     private Gtk.Label verlab;
@@ -392,6 +408,7 @@ public class MWPlanner : Gtk.Application {
     private ArtWin art_win;
     private FlightBox fbox;
     private DirnBox dbox;
+    private RadarView radarv;
     private WPMGR wpmgr;
     private MissionItem[] wp_resp;
     private string boxnames = null;
@@ -540,6 +557,7 @@ public class MWPlanner : Gtk.Application {
     private int magtime=0;
     private int magdiff=0;
     private bool magcheck;
+    private uint8 say_state = 0;
 
     private bool x_replay_bbox_ltm_rb;
     private bool x_kmz;
@@ -548,6 +566,7 @@ public class MWPlanner : Gtk.Application {
     private Array<KmlOverlay> kmls;
 
     public DevManager devman;
+    public PowerState pstate;
 
     public struct MQI //: Object
     {
@@ -636,6 +655,8 @@ public class MWPlanner : Gtk.Application {
 
     private TelemStats telstats;
     private LayMan lman;
+
+    private RadarPlot[] radar_plot={};
 
     public enum NAVCAPS
     {
@@ -787,6 +808,7 @@ public class MWPlanner : Gtk.Application {
     private const uint RESTARTINTVL=(30000/TIMINTVL);
     private const uint MAVINTVL=(2000/TIMINTVL);
     private const uint CRITINTVL=(3000/TIMINTVL);
+    private const uint RADARINTVL=(10000/TIMINTVL);
 
     private enum SATS
     {
@@ -806,6 +828,7 @@ public class MWPlanner : Gtk.Application {
 
     private Timer lastp;
     private uint nticks = 0;
+    private uint lastdbus = 0;
     private uint lastm = 0;
     private uint lastrx = 0;
     private uint last_ga = 0;
@@ -819,6 +842,7 @@ public class MWPlanner : Gtk.Application {
     private static string bfile = null;
     private static string forward_device = null;
     private static string sport_device = null;
+    private static string radar_device = null;
     private static int dmrtype=0;
     private static DEBUG_FLAGS debug_flags = 0;
     private static VersInfo vi ={0};
@@ -840,14 +864,15 @@ public class MWPlanner : Gtk.Application {
     private MwpServer mss=null;
     private uint8 spapi =  0;
 
-    public const string[] SPEAKERS =  {"none", "espeak","speechd","flite"};
+    public const string[] SPEAKERS =  {"none", "espeak","speechd","flite","external"};
     public enum SPEAKER_API
     {
         NONE=0,
         ESPEAK=1,
         SPEECHD=2,
         FLITE=3,
-        COUNT=4
+        EXTERNAL=4,
+        COUNT=5
     }
 
     private const Gtk.TargetEntry[] targets = {
@@ -889,6 +914,7 @@ public class MWPlanner : Gtk.Application {
         { "wayland", 0, 0, OptionArg.NONE, out use_wayland, "force wayland (if available)", null},
         { "really-really-run-as-root", 0, 0, OptionArg.NONE, out asroot, "no reason to ever use this", null},
         { "forward-to", 0, 0, OptionArg.STRING, out forward_device, "forward telemetry to", "device-name"},
+        { "radar-device", 0, 0, OptionArg.STRING, out radar_device, "dedicated inav radar device", "device-name"},
         { "smartport", 0, 0, OptionArg.STRING, out sport_device, "smartport device", "device-name"},
         {"perma-warn", 0, 0, OptionArg.NONE, out permawarn, "info dialogues never time out", null},
         {"fsmenu", 0, 0, OptionArg.NONE, out nofsmenu, "use a menu bar in full screen (vice a menu button)", null},
@@ -898,6 +924,13 @@ public class MWPlanner : Gtk.Application {
 
     void show_dock_id (DOCKLETS id, bool iconify=false)
     {
+/*
+        print("show dock %u, icon %s closed %s, iconified %s\n",
+              id, iconify.to_string(),
+              dockitem[id].is_closed().to_string(),
+              dockitem[id].is_iconified().to_string()
+              );
+*/
         if(dockitem[id].is_closed() && !dockitem[id].is_iconified())
         {
             dockitem[id].show();
@@ -944,6 +977,8 @@ public class MWPlanner : Gtk.Application {
     {
         if(msp.available)
             msp.close();
+
+        mss.quit();
 
         if(conf.atexit != null)
             try {
@@ -999,6 +1034,7 @@ public class MWPlanner : Gtk.Application {
         resend_last();
     }
 
+
     public override void activate ()
     {
         base.startup();
@@ -1017,10 +1053,10 @@ public class MWPlanner : Gtk.Application {
 
         {
             string []  ext_apps = {
-                conf.blackbox_decode, "replay_bbox_ltm.rb",
-                "gnuplot", "mwp-plot-elevations.rb", "unzip" };
+            conf.blackbox_decode, "replay_bbox_ltm.rb",
+            "gnuplot", "mwp-plot-elevations.rb", "unzip" };
             bool appsts[5];
-            int i = 0;
+            var i = 0;
             foreach (var s in ext_apps)
             {
                 appsts[i] = MWPUtils.exists_on_path(s);
@@ -1032,29 +1068,61 @@ public class MWPlanner : Gtk.Application {
             x_plot_elevations_rb = (appsts[2]&&appsts[3]);
             x_kmz = appsts[4];
         }
+
         pos_is_centre = conf.pos_is_centre;
 
         mmap = new ModelMap();
         mmap.init();
 
         spapi = 0;
+
         if(exvox == null)
         {
-            uint8 spapi_mask  = MwpSpeech.get_api_mask();
-            if (spapi_mask != 0)
+            StringBuilder vsb = new StringBuilder();
+            if (!MwpMisc.is_cygwin())
             {
-                for(uint8 j = SPEAKER_API.ESPEAK; j < SPEAKER_API.COUNT; j++)
+                uint8 spapi_mask  = MwpSpeech.get_api_mask();
+                if (spapi_mask != 0)
                 {
-                    if(conf.speech_api == SPEAKERS[j] && ((spapi_mask & (1<<(j-1))) != 0))
+                    for(uint8 j = SPEAKER_API.ESPEAK; j < SPEAKER_API.COUNT; j++)
                     {
-                        spapi = j;
-                        break;
+                        if(conf.speech_api == SPEAKERS[j] && ((spapi_mask & (1<<(j-1))) != 0))
+                        {
+                            spapi = j;
+                            break;
+                        }
                     }
                 }
+                MWPLog.message("Using speech api %d [%s]\n", spapi, SPEAKERS[spapi]);
             }
-            MWPLog.message("Using speech api %d [%s]\n", spapi, SPEAKERS[spapi]);
+            else
+            {
+                switch(conf.speech_api)
+                {
+                    case "espeak":
+                        vsb.append("espeak");
+                        if(conf.evoice.length > 0)
+                        {
+                            vsb.append(" -v ");
+                            vsb.append(conf.evoice);
+                        }
+                        break;
+                    case "speechd":
+                        vsb.append("spd-say -e");
+                        if(conf.svoice.length > 0)
+                        {
+                            vsb.append(" -t ");
+                            vsb.append(conf.svoice);
+                        }
+                        break;
+                }
+                if(vsb.len > 0)
+                    exvox = vsb.str;
+            }
         }
-        else
+
+
+        if(exvox != null)
         {
             MWPLog.message("Using external speech api [%s]\n", exvox);
         }
@@ -1203,6 +1271,10 @@ public class MWPlanner : Gtk.Application {
             wp_edit = !wp_edit;
             wp_edit_button.label= (wp_edit) ? "✔" : "";
             wp_edit_button.tooltip_text = ("Enable / disable the addition of WPs by clicking on the map (%sabled)".printf((wp_edit) ? "en" : "dis"));
+            if(wp_edit)
+                ls.set_fake_home();
+            else
+                ls.unset_fake_home();
         });
 
         arm_warn.clicked.connect(() =>
@@ -1285,8 +1357,10 @@ public class MWPlanner : Gtk.Application {
         var places = new Places();
         var pls = places.get_places(conf.latitude, conf.longitude);
         setpos.load_places(pls,conf.dms);
-        setpos.new_pos.connect((la, lo) => {
+        setpos.new_pos.connect((la, lo, zoom) => {
                 map_centre_on(la, lo);
+                if(zoom > 0)
+                    view.zoom_level = zoom;
             });
 
         navconf = new NavConfig(window, builder);
@@ -1428,18 +1502,13 @@ public class MWPlanner : Gtk.Application {
                 var aon = audio_cb.active;
                 if(aon == false)
                 {
-                    audio_on = true;
-                    start_audio(false);
+                    audio_cb.active = true;
                 }
                 navstatus.audio_test();
-
                 if(aon == false)
                 {
-                    Timeout.add(8000, () => {
-                            if(audio_cb.active == false)
-                            {
-                                stop_audio();
-                            }
+                    Timeout.add(1000, () => {
+                            audio_cb.active = false;
                             return false;
                         });
                 }
@@ -1646,6 +1715,11 @@ public class MWPlanner : Gtk.Application {
                 show_dock_id(DOCKLETS.DBOX, true);
             });
         window.add_action(saq);
+        saq = new GLib.SimpleAction("radar-view",null);
+        saq.activate.connect(() => {
+                radarv.show_or_hide();
+            });
+        window.add_action(saq);
 
         saq = new GLib.SimpleAction("keys",null);
         saq.activate.connect(() => {
@@ -1684,9 +1758,14 @@ public class MWPlanner : Gtk.Application {
         telemstatus = new TelemetryStats(builder);
         fbox  = new FlightBox(builder,window);
         dbox = new DirnBox(builder, conf.horizontal_dbox);
-
+        radarv = new RadarView(builder,window,conf.max_radar);
         view = embed.get_view();
         view.set_reactive(true);
+
+        if(conf.arming_speak)
+            say_state=NavStatus.SAY_WHAT.Arm;
+
+        navstatus.set_audio_status(say_state);
 
         view.notify["zoom-level"].connect(() => {
                 var val = view.get_zoom_level();
@@ -1915,10 +1994,25 @@ public class MWPlanner : Gtk.Application {
         audio_cb.toggled.connect (() => {
                 audio_on = audio_cb.active;
                 if (audio_on)
+                {
                     start_audio();
+                }
                 else
+                {
                     stop_audio();
+                }
             });
+
+        audio_cb.button_release_event.connect (() => {
+                if(audio_cb.active)
+                    say_state &= ~NavStatus.SAY_WHAT.Nav;
+                else
+                    say_state |= NavStatus.SAY_WHAT.Nav;
+
+                navstatus.set_audio_status(say_state);
+                return false;
+            });
+
         var centreonb = builder.get_object ("checkbutton1") as Gtk.CheckButton;
         if(conf.use_legacy_centre_on)
             centreonb.set_label("Centre On");
@@ -1969,13 +2063,27 @@ public class MWPlanner : Gtk.Application {
         if(forward_device != null)
             fwddev = new MWSerial.forwarder();
 
+        if(radar_device != null)
+        {
+            rdrdev = new MWSerial.reader();
+            rdrdev.serial_event.connect((s,cmd,raw,len,xflags,errs) => {
+                handle_radar(cmd,raw,len,xflags,errs);
+                });
+
+            try_radar_dev();
+            Timeout.add_seconds(15, () => {
+                    try_radar_dev();
+                    return Source.CONTINUE;
+                });
+        }
+
         mq = new Queue<MQI?>();
 
         build_deventry();
         dev_entry.active = 0;
 
         devman.device_added.connect((s) => {
-                if(s.contains(" ") || msp.available)
+                if(s != null && s.contains(" ") || msp.available)
                     append_deventry(s);
                 else
                     prepend_deventry(s);
@@ -2098,7 +2206,7 @@ public class MWPlanner : Gtk.Application {
         pane.pack1(embed,true, true);
         pane.pack2(box, true, true);
 
-        Timeout.add_seconds(5, () => { return try_connect(); });
+//        Timeout.add_seconds(5, () => { return try_connect(); });
         if(set_fs)
             window.fullscreen();
         else if (no_max == false)
@@ -2160,7 +2268,10 @@ public class MWPlanner : Gtk.Application {
 
         arm_warn.hide();
 
-        anim_cb(true);
+            // not anim_cb() as we just want the centre, regardless
+        poslabel.set_text(PosFormat.pos(view.get_center_latitude(),
+                                            view.get_center_longitude(),
+                                            conf.dms));
 
         var scale = new Champlain.Scale();
         scale.connect_view(view);
@@ -2180,7 +2291,6 @@ public class MWPlanner : Gtk.Application {
         box.pack_end (dock, true, true, 0);
 
         dockitem = new DockItem[DOCKLETS.NUMBER];
-
         dockitem[DOCKLETS.GPS]= new DockItem.with_stock ("GPS",
                                                          "GPS Info", "gtk-refresh",
                                                          DockItemBehavior.NORMAL);
@@ -2200,7 +2310,6 @@ public class MWPlanner : Gtk.Application {
         dockitem[DOCKLETS.RADIO]= new DockItem.with_stock ("Radio",
                          "Radio Status", "gtk-network",
                          DockItemBehavior.NORMAL );
-        dock.add_item (dockitem[DOCKLETS.RADIO], DockPlacement.BOTTOM);
 
         dockitem[DOCKLETS.TELEMETRY]= new DockItem.with_stock ("Telemetry",
                          "Telemetry", "gtk-disconnect",
@@ -2213,6 +2322,7 @@ public class MWPlanner : Gtk.Application {
         dockitem[DOCKLETS.DBOX]= new DockItem.with_stock ("DirectionView",
                          "DirectionView", "gtk-fullscreen",
                          DockItemBehavior.NORMAL);
+
 
         dockitem[DOCKLETS.MISSION]= new DockItem.with_stock ("Mission",
                          "Mission Tote", "gtk-properties",
@@ -2372,6 +2482,7 @@ public class MWPlanner : Gtk.Application {
         {
             autocon_cb.active=true;
             mkcon = true;
+            try_connect();
         }
 
         if(conf.mag_sanity != null)
@@ -2381,9 +2492,21 @@ public class MWPlanner : Gtk.Application {
             {
                 magdiff=int.parse(parts[0]);
                 magtime=int.parse(parts[1]);
-                MWPLog.message("Enabled mag anonaly checking %d⁰, %ds\n", magdiff,magtime);
+                MWPLog.message("Enabled mag abnomaly checking %d⁰, %ds\n", magdiff,magtime);
                 magcheck = true;
             }
+        }
+
+        pstate = new PowerState();
+        if(pstate.init())
+        {
+            MWPLog.message("%s\n", pstate.show_status());
+            pstate.host_power_alert.connect((s) => {
+                    audio_cb.active = true; // the user will hear this ...
+                    navstatus.host_power(s);
+                    MWPLog.message("%s\n", s);
+                    mwp_warning_box(s, Gtk.MessageType.ERROR, 30);
+                });
         }
     }
 
@@ -2735,9 +2858,10 @@ public class MWPlanner : Gtk.Application {
                 else
                     mwflags = xbits; // don't know better
 
-                armed_processing(mwflags,"Sport");
+                var achg = armed_processing(mwflags,"Sport");
                 var xws = want_special;
-                if(ltmflags != last_ltmf)
+                var mchg = (ltmflags != last_ltmf);
+                if (mchg)
                 {
                     last_ltmf = ltmflags;
                     if(ltmflags == 9)
@@ -2765,6 +2889,10 @@ public class MWPlanner : Gtk.Application {
                                    xws, want_special);
                     fmodelab.set_label(lmstr);
                 }
+
+                if(achg || mchg)
+                    update_mss_state(ltmflags);
+
                 if(want_special != 0 /* && have_home*/)
                     process_pos_states(xlat,xlon, 0, "SPort status");
 
@@ -2913,7 +3041,7 @@ public class MWPlanner : Gtk.Application {
             case SportDev.FrID.FUEL_ID:
                 switch (conf.smartport_fuel)
                 {
-                    case 0:
+case 0:
                         curr.mah = 0;
                         break;
                     case 1:
@@ -2929,6 +3057,64 @@ public class MWPlanner : Gtk.Application {
 
             default:
                 break;
+        }
+    }
+
+    private void update_mss_state(uint8 fmode)
+    {
+        MwpServer.State s = MwpServer.State.UNDEFINED;
+        if(armed == 0)
+            s = MwpServer.State.DISARMED;
+        else
+        {
+            switch(fmode)
+            {
+                case 0:
+                    s = MwpServer.State.MANUAL;
+                    break;
+                case 1:
+                case 4:
+                    s = MwpServer.State.ACRO;
+                    break;
+                case 2:
+                    s = MwpServer.State.ANGLE;
+                    break;
+                case 3:
+                    s = MwpServer.State.HORIZON;
+                    break;
+                case 8:
+                    s = MwpServer.State.ALTHOLD;
+                    break;
+                case 9:
+                    s = MwpServer.State.POSHOLD;
+                    break;
+                case 10:
+                    s = MwpServer.State.WP;
+                    break;
+                case 11:
+                    s = MwpServer.State.HEADFREE;
+                    break;
+                case 13:
+                    s = MwpServer.State.RTH;
+                    break;
+                case 15:
+                    s = MwpServer.State.RTH;
+                    break;
+                case 18:
+                    s = MwpServer.State.CRUISE;
+                    break;
+                case 20:
+                    s = MwpServer.State.LAUNCH;
+                    break;
+                case 21:
+                    s = MwpServer.State.AUTOTUNE;
+                    break;
+            }
+        }
+        if(s != mss.m_state)
+        {
+            mss.m_state = s;
+            mss.state_changed(s);
         }
     }
 
@@ -3077,6 +3263,8 @@ public class MWPlanner : Gtk.Application {
 
         mss.__connect_device.connect((s) => {
                 int n = append_deventry(s);
+                if(n == -1)
+                    return false;
                 dev_entry.active = n;
                 connect_serial();
                 return msp.available;
@@ -3180,6 +3368,9 @@ public class MWPlanner : Gtk.Application {
 
     private int append_deventry(string s)
     {
+        if(s == radar_device)
+            return -1;
+
         var n = find_deventry(s);
         if (n == -1)
         {
@@ -3193,6 +3384,9 @@ public class MWPlanner : Gtk.Application {
 
     private void prepend_deventry(string s)
     {
+        if(s == radar_device)
+            return;
+
         var n = find_deventry(s);
         if (n == -1)
         {
@@ -3392,16 +3586,6 @@ public class MWPlanner : Gtk.Application {
         Timeout.add(TIMINTVL, () => {
                 nticks++;
 
-/**********************
-                if((nticks % 10) == 0)
-                {
-                    MWPLog.message("#### %s %s %s %s\n",
-                                   msp.available.to_string(),
-                                   nticks.to_string(),
-                                   lastrx.to_string(),
-                                   serstate.to_string());
-                }
-****************/
                 if(msp.available)
                 {
                     if(serstate != SERSTATE.NONE)
@@ -3480,7 +3664,7 @@ public class MWPlanner : Gtk.Application {
                                 last_tm = 0;
                                 lastp.start();
                                 serstate = SERSTATE.NORMAL;
-                                queue_cmd(msp_get_status/*MSP.Cmds.IDENT*/,null,0);
+                                queue_cmd(msp_get_status,null,0);
                                 run_queue();
                             }
                         }
@@ -3516,6 +3700,19 @@ public class MWPlanner : Gtk.Application {
                     }
                     elapsedlab.set_text("%02d:%02d".printf(mins,secs));
                     last_dura = duration;
+                }
+
+                foreach (var r in radar_plot)
+                {
+                    if((nticks - r.lasttick) > RADARINTVL)
+                    {
+                        if(r.state != 3)
+                        {
+                            r.state = 3;
+                            radarv.update(r, conf.dms);
+                            markers.set_radar_stale(r.id);
+                        }
+                    }
                 }
                 return Source.CONTINUE;
             });
@@ -3817,8 +4014,9 @@ public class MWPlanner : Gtk.Application {
         set_menu_state("terminal", ((msp != null && msp.available && armed == 0)));
     }
 
-    private void armed_processing(uint64 flag, string reason="")
+    private bool armed_processing(uint64 flag, string reason="")
     {
+        bool changed = false;
         if(armed == 0)
         {
             armtime = 0;
@@ -3847,6 +4045,7 @@ public class MWPlanner : Gtk.Application {
 
         if(armed != larmed)
         {
+            changed = true;
             navstatus.set_replay_mode((replayer != Player.NONE));
             radstatus.annul();
             if (armed == 1)
@@ -3873,7 +4072,10 @@ public class MWPlanner : Gtk.Application {
 
                 if (conf.audioarmed == true)
                 {
+                    say_state |= NavStatus.SAY_WHAT.Nav;
+                    navstatus.set_audio_status(say_state);
                     audio_cb.active = true;
+
                 }
                 if(conf.logarmed == true)
                 {
@@ -3914,6 +4116,8 @@ public class MWPlanner : Gtk.Application {
                 if (conf.audioarmed == true)
                 {
                     audio_cb.active = false;
+                    say_state &= ~NavStatus.SAY_WHAT.Nav;
+                    navstatus.set_audio_status(say_state);
                 }
                 if(conf.logarmed == true)
                 {
@@ -3926,6 +4130,7 @@ public class MWPlanner : Gtk.Application {
             }
         }
         larmed = armed;
+        return changed;
     }
 
     private void update_odo(double spd, double ddm)
@@ -3933,12 +4138,21 @@ public class MWPlanner : Gtk.Application {
         odo.time = (uint)duration;
         odo.distance += ddm;
         if (spd > odo.speed)
+        {
             odo.speed = spd;
+            odo.spd_secs = odo.time;
+        }
         if(NavStatus.cg.range > odo.range)
+        {
             odo.range = NavStatus.cg.range;
+            odo.rng_secs = odo.time;
+        }
         double estalt = (double)NavStatus.alti.estalt/100.0;
         if (estalt > odo.alt)
-         odo.alt = estalt;
+        {
+            odo.alt = estalt;
+            odo.alt_secs = odo.time;
+        }
     }
 
     private void reset_poller()
@@ -3996,7 +4210,12 @@ public class MWPlanner : Gtk.Application {
         }
 
         if(scflags != SAT_FLAGS.NONE)
+        {
             gps_alert(scflags);
+            mss.m_nsats = (uint8)GPSInfo.nsat;
+            mss.m_fix = (uint8)GPSInfo.fix;
+            mss.sats_changed(mss.m_nsats, mss.m_fix);
+        }
     }
 
     private void flash_gps()
@@ -4142,7 +4361,7 @@ public class MWPlanner : Gtk.Application {
     {
         StringBuilder sb = new StringBuilder ();
         if(af == 0)
-            sb.append("OK");
+            sb.append("Arming OK");
         else
         {
             for(var i = 0; i < 32; i++)
@@ -4162,7 +4381,7 @@ public class MWPlanner : Gtk.Application {
                                 if(gpsstats.eph > inav_max_eph_epv ||
                                     gpsstats.epv > inav_max_eph_epv)
                                 {
-                                    sb.append(" • EPH/EPV");
+                                    sb.append(" • Fix quality");
                                     sb.append_c(sep);
                                     navmodes = false;
                                 }
@@ -4255,10 +4474,18 @@ public class MWPlanner : Gtk.Application {
                 {
                     xarm_flags = arm_flags;
 
-                    string arm_msg = get_arm_fail(xarm_flags);
+                    string arming_msg = get_arm_fail(xarm_flags);
                     MWPLog.message("Arming flags: %s (%04x), load %d%% %s\n",
-                                   arm_msg, xarm_flags, loadpct,
+                                   arming_msg, xarm_flags, loadpct,
                                    msp_get_status.to_string());
+
+
+                    if (conf.audioarmed == true)
+                        audio_cb.active = true;
+
+                    if(audio_cb.active == true)
+                        navstatus.arm_status(arming_msg);
+
                     if((arm_flags & ~(ARMFLAGS.ARMED|ARMFLAGS.WAS_EVER_ARMED)) != 0)
                     {
                         arm_warn.show();
@@ -4295,7 +4522,6 @@ public class MWPlanner : Gtk.Application {
                     sb.append(lab);
                     if(naze32 && vi.fc_api != 0)
                         sb.append_printf(" API %d.%d", vi.fc_api >> 8,vi.fc_api & 0xff);
-
                     if(navcap != NAVCAPS.NONE)
                         sb.append(" Nav");
                     sb.append_printf(" Pr %d", profile);
@@ -4303,6 +4529,7 @@ public class MWPlanner : Gtk.Application {
                 }
 
                 want_special = 0;
+                MWPLog.message("%s %s\n", verlab.label, typlab.label);
 
                 if(replayer == Player.NONE)
                 {
@@ -4367,11 +4594,20 @@ public class MWPlanner : Gtk.Application {
             }
 
                 // acro/horizon/angle changed
+            uint8 ltmflags = 0;
+            var mchg = bxflag != xbits;
 
             if((bxflag & lmask) != (xbits & lmask))
             {
                 report_bits(bxflag);
             }
+
+            if ((bxflag & horz_mask) != 0)
+                ltmflags = 3;
+            else if((bxflag & angle_mask) != 0)
+                ltmflags = 2;
+            else
+                ltmflags = 1;
 
             if(armed != 0)
             {
@@ -4382,6 +4618,7 @@ public class MWPlanner : Gtk.Application {
                     MWPLog.message("set RTH on %08x %u %ds\n", bxflag,bxflag,
                                    (int)duration);
                     want_special |= POSMODE.RTH;
+                    ltmflags = 13;
                 }
                 else if ((ph_mask != 0) &&
                          ((bxflag & ph_mask) != 0) &&
@@ -4390,6 +4627,7 @@ public class MWPlanner : Gtk.Application {
                     MWPLog.message("set PH on %08x %u %ds\n", bxflag, bxflag,
                                    (int)duration);
                     want_special |= POSMODE.PH;
+                    ltmflags = 9;
                 }
                 else if ((wp_mask != 0) &&
                          ((bxflag & wp_mask) != 0) &&
@@ -4398,6 +4636,7 @@ public class MWPlanner : Gtk.Application {
                     MWPLog.message("set WP on %08x %u %ds\n", bxflag, bxflag,
                                    (int)duration);
                     want_special |= POSMODE.WP;
+                    ltmflags = 10;
                 }
                 else if ((xbits != bxflag) && craft != null)
                 {
@@ -4405,8 +4644,10 @@ public class MWPlanner : Gtk.Application {
                 }
             }
             xbits = bxflag;
+            var achg = armed_processing(bxflag,"msp");
+            if(achg || mchg)
+                update_mss_state(ltmflags);
         }
-        armed_processing(bxflag,"msp");
     }
 
     private void centre_mission(Mission ms, bool ctr_on)
@@ -4522,6 +4763,38 @@ public class MWPlanner : Gtk.Application {
                 double cse = (usemag || ((replayer & Player.MWP) == Player.MWP)) ? mhead : GPSInfo.cse;
                 craft.set_lat_lon(GPSInfo.lat, GPSInfo.lon,cse);
             }
+
+            int32 talt = (int32)NavStatus.alti.estalt/100;
+            int16 tazimuth = (int16)(Math.atan2(talt,  NavStatus.cg.range)/(Math.PI/180.0));
+                // Historic MW baggage ...alas
+            var brg = NavStatus.cg.direction;
+            if(brg < 0)
+               brg += 360;
+            brg = ((brg + 180) % 360);
+            if(mss.dbus_pos_interval == 0 || nticks - lastdbus >= mss.dbus_pos_interval)
+            {
+                if(mss.v_lat != GPSInfo.lat ||
+                   mss.v_long != GPSInfo.lon ||
+                   mss.v_alt != talt)
+                    mss.location_changed(GPSInfo.lat, GPSInfo.lon, talt);
+
+                if(mss.v_azimuth != tazimuth ||
+                   NavStatus.cg.range != mss.v_range ||
+                   (uint32)brg != mss.v_direction)
+                    mss.polar_changed(NavStatus.cg.range, brg, tazimuth);
+                if(mss.v_spd != (uint32) GPSInfo.spd || mss.v_cse != (uint32)GPSInfo.cse)
+                    mss.velocity_changed((uint32)GPSInfo.spd, (uint32)GPSInfo.cse);
+
+                lastdbus = nticks;
+            }
+            mss.v_lat = GPSInfo.lat;
+            mss.v_long = GPSInfo.lon;
+            mss.v_alt = talt;
+            mss.v_spd = (uint32)GPSInfo.spd;
+            mss.v_cse = (uint32)GPSInfo.cse;
+            mss.v_azimuth = tazimuth;
+            mss.v_range = NavStatus.cg.range;
+            mss.v_direction = brg;
         }
         return pv;
     }
@@ -4768,27 +5041,36 @@ public class MWPlanner : Gtk.Application {
         }
     }
 
-
     private void process_msp_analog(MSP_ANALOG an)
     {
-        if(have_mspradio)
-            an.rssi = 0;
-        else
-            radstatus.update_rssi(an.rssi, item_visible(DOCKLETS.RADIO));
-        curr.centiA = an.amps;
-        curr.mah = an.powermetersum;
-        if(curr.centiA != 0 || curr.mah != 0)
+        if ((replayer & Player.MWP) == Player.NONE)
         {
-            curr.ampsok = true;
-            navstatus.current(curr, 2);
-            if (curr.centiA > odo.amps)
-                odo.amps = curr.centiA;
+            if(have_mspradio)
+                an.rssi = 0;
+            else
+                radstatus.update_rssi(an.rssi, item_visible(DOCKLETS.RADIO));
+            curr.centiA = an.amps;
+            curr.mah = an.powermetersum;
+            if(curr.centiA != 0 || curr.mah != 0)
+            {
+                curr.ampsok = true;
+                navstatus.current(curr, 2);
+                if (curr.centiA > odo.amps)
+                    odo.amps = curr.centiA;
+            }
+            if(Logger.is_logging)
+            {
+                Logger.analog(an);
+            }
+            set_bat_stat(an.vbat);
         }
-        if(Logger.is_logging)
-        {
-            Logger.analog(an);
-        }
-        set_bat_stat(an.vbat);
+    }
+
+    public void handle_radar(MSP.Cmds cmd, uint8[] raw, uint len,
+                              uint8 xflags, bool errs)
+    {
+        if (cmd == MSP.Cmds.RADAR_POS || cmd == MSP.Cmds.COMMON_SET_RADAR_POS)
+            process_radar_pos(raw);
     }
 
     public void handle_serial(MSP.Cmds cmd, uint8[] raw, uint len,
@@ -5981,7 +6263,6 @@ public class MWPlanner : Gtk.Application {
             break;
 
             case MSP.Cmds.TS_FRAME:
-            {
                 LTM_SFRAME sf = LTM_SFRAME ();
                 uint8* rp;
                 rp = deserialise_u16(raw, out sf.vbat);
@@ -6048,9 +6329,10 @@ public class MWPlanner : Gtk.Application {
                 else
                     mwflags = xbits; // don't know better
 
-                armed_processing(mwflags,"ltm");
+                var achg = armed_processing(mwflags,"ltm");
                 var xws = want_special;
-                if(ltmflags != last_ltmf)
+                var mchg = (ltmflags != last_ltmf);
+                if(mchg)
                 {
                     last_ltmf = ltmflags;
                     if(ltmflags == 9)
@@ -6078,71 +6360,71 @@ public class MWPlanner : Gtk.Application {
                                    xlat, xlon, xws, want_special);
                     fmodelab.set_label(lmstr);
                 }
+
+                if(mchg || achg)
+                    update_mss_state(ltmflags);
+
                 if(want_special != 0 /* && have_home*/)
                     process_pos_states(xlat,xlon, 0, "SFrame");
 
                 uint16 mah = sf.vcurr;
                 uint16 ivbat = (sf.vbat + 50) / 100;
-                var mahtm = GLib.get_monotonic_time ();
-                    // for mwp replay, we either have analog or don't bother
-                if ((replayer & Player.MWP) == Player.NONE)
+                if ((replayer & Player.BBOX) == Player.BBOX
+                    && curr.bbla > 0)
                 {
-                    if ((replayer & Player.BBOX) == Player.BBOX
-                        && curr.bbla > 0)
+                    curr.ampsok = true;
+                    curr.centiA = curr.bbla;
+                    if (mah > curr.mah)
+                        curr.mah = mah;
+                    navstatus.current(curr, 2);
+                        // already checked for odo with bbl amps
+                }
+                else if (replayer == Player.MWP_FAST)
+                {
+                    curr.ampsok = true;
+                    curr.mah = mah;
+                    navstatus.current(curr, 2);
+                }
+                else if (curr.lmah == 0)
+                {
+                    curr.lmahtm = nticks;
+                    curr.lmah = mah;
+                }
+                else if (mah > 0 && mah != 0xffff)
+                {
+                    if (mah > curr.lmah)
                     {
-                        curr.ampsok = true;
-                        curr.centiA = curr.bbla;
-                        if (mah > curr.mah)
-                            curr.mah = mah;
-                        navstatus.current(curr, 2);
-                            // already checked for odo with bbl amps
-                    }
-                    else if (mah > 0 && mah != 0xffff && curr.lmah > 0)
-                    {
-                        if (mah > curr.lmah)
+                        var mahtm = nticks;
+                        var tdiff = (mahtm - curr.lmahtm);
+                        var cdiff = mah - curr.lmah;
+                            // should be time aware
+                        if(cdiff < 100 || curr.lmahtm == 0)
                         {
-                            var tdiff = (mahtm - curr.lmahtm);
-                            var cdiff = mah - curr.lmah;
-                                // should be time aware
-                            if(cdiff < 100 || curr.lmahtm == 0)
-                            {
-                                curr.ampsok = true;
-                                    // 100 * 1000 * 1000 * 3600 / 1000
-                                    // centiA, microsecs, hours / milli AH
-                                var iamps = (uint16)(cdiff * 3600000*100 / tdiff);
-                                if (iamps >=  0 && tdiff > 200000)
+                            curr.ampsok = true;
+                            curr.mah = mah;
+                            var iamps = (uint16)(cdiff * 3600 / tdiff);
+                                if (iamps >=  0 && tdiff > 5)
                                 {
                                     curr.centiA = iamps;
-                                    curr.mah = mah;
                                     navstatus.current(curr, 2);
                                     if (curr.centiA > odo.amps)
-                                    {
-                                        MWPLog.message("set max amps %s %s (%s)\n",
-                                                       odo.amps.to_string(),
-                                                       curr.centiA.to_string(),
-                                                       mah.to_string());
                                         odo.amps = curr.centiA;
-                                    }
+                                    curr.lmahtm = mahtm;
+                                    curr.lmah = mah;
                                 }
-                            }
                         }
-                        else if (curr.lmah - mah > 100)
-                        {
-                            MWPLog.message("Negative energy usage %u %u\n", curr.lmah, mah);
-                        }
+                        else
+                            MWPLog.message("curr error %d\n",cdiff);
+
+                    }
+                    else if (curr.lmah - mah > 100)
+                    {
+                        MWPLog.message("Negative energy usage %u %u\n", curr.lmah, mah);
                     }
                 }
-                curr.lmahtm = mahtm;
-                curr.lmah = mah;
                 navstatus.update_ltm_s(sf, item_visible(DOCKLETS.NAVSTATUS));
-                MSP_ANALOG an = MSP_ANALOG();
-                an.vbat = (uint8)ivbat;
-                an.powermetersum = (uint16)curr.mah;
-                an.rssi = 1023*sf.rssi/254;
-                an.amps = curr.centiA;
-                process_msp_analog(an);
-            }
-            break;
+                set_bat_stat((uint8)ivbat);
+                break;
 
             case MSP.Cmds.MAVLINK_MSG_ID_HEARTBEAT:
                 Mav.MAVLINK_HEARTBEAT m = *(Mav.MAVLINK_HEARTBEAT*)raw;
@@ -6163,7 +6445,98 @@ public class MWPlanner : Gtk.Application {
                 else
                     armed = 0;
                 sensor = mavsensors;
-                armed_processing(armed,"mav");
+
+
+                uint8 ltmflags = 0;
+                if(m.type == Mav.TYPE.MAV_TYPE_FIXED_WING)
+                {
+                        // I don't believe the iNav mapping for FW ...
+                    switch(m.custom_mode)
+                    {
+                        case 0:
+                            ltmflags = 0; // manual
+                            break;
+                        case 4:
+                            ltmflags = 1; // acro
+                            break;
+                        case 2:
+                            ltmflags = 2; // angle / horiz
+                            break;
+                        case 5:
+                            ltmflags = 8;  // alth
+                            break;
+                        case 1:
+                            ltmflags = 9; // posh
+                            break;
+                        case 11:
+                            ltmflags = 13; // rth
+                            break;
+                        case 10:
+                            ltmflags = 10; // wp
+                            break;
+                        case 15:
+                            ltmflags = 20; // launch
+                            break;
+                        default:
+                            ltmflags = 1;
+                            break;
+                    }
+                }
+                else
+                {
+                    switch(m.custom_mode)
+                    {
+                        case 1:
+                            ltmflags = 1; // acro / manual
+                            break;
+                        case 0:
+                            ltmflags = 2; // angle / horz
+                            break;
+                        case 2:
+                            ltmflags = 8; // alth
+                            break;
+                        case 16:
+                            ltmflags = 9; // posh
+                            break;
+                        case 6:
+                            ltmflags = 13; // rth
+                            break;
+                        case 3:
+                            ltmflags = 10; // wp
+                            break;
+                        case 18:
+                            ltmflags = 20; // launch
+                            break;
+                        default:
+                            ltmflags = 1;
+                            break;
+                    }
+                }
+
+                var achg = armed_processing(armed,"mav");
+                var mchg = (ltmflags != last_ltmf);
+                if (mchg)
+                {
+                    last_ltmf = ltmflags;
+                    if(ltmflags == 9)
+                        want_special |= POSMODE.PH;
+                    else if(ltmflags == 10)
+                        want_special |= POSMODE.WP;
+                    else if(ltmflags == 13)
+                        want_special |= POSMODE.RTH;
+                    else if(ltmflags == 8)
+                        want_special |= POSMODE.ALTH;
+                    else if(ltmflags == 18)
+                        want_special |= POSMODE.CRUISE;
+                    else if(ltmflags != 15)
+                    {
+                        if(craft != null)
+                            craft.set_normal();
+                    }
+                }
+
+                if(achg || mchg)
+                    update_mss_state(ltmflags);
 
                 if(Logger.is_logging)
                     Logger.mav_heartbeat(m);
@@ -6207,6 +6580,7 @@ public class MWPlanner : Gtk.Application {
 
                 if(gpsfix)
                 {
+                    sat_coverage();
                     if(armed == 1)
                     {
                         if(m.vel != 0xffff)
@@ -6257,6 +6631,7 @@ public class MWPlanner : Gtk.Application {
                 break;
 
             case MSP.Cmds.MAVLINK_MSG_RC_CHANNELS_RAW:
+/*****
                 for (var j = 0; j < mavposdef.length; j++)
                 {
                     if(mavposdef[j].chan != 0)
@@ -6280,6 +6655,7 @@ public class MWPlanner : Gtk.Application {
                         }
                     }
                 }
+**/
                 if(Logger.is_logging)
                 {
                     Mav.MAVLINK_RC_CHANNELS m = *(Mav.MAVLINK_RC_CHANNELS*)raw;
@@ -6293,8 +6669,13 @@ public class MWPlanner : Gtk.Application {
                 var ilat  = m.latitude / 10000000.0;
                 var ilon  = m.longitude / 10000000.0;
 
-                if(want_special != 0)
+                if(home_changed(ilat, ilon))
+                {
+                    navstatus.cg_on();
+                    sflags |=  NavStatus.SPK.GPS;
+                    want_special |= POSMODE.HOME;
                     process_pos_states(ilat, ilon, m.altitude / 1000.0, "MAvOrig");
+                }
 
                 if(Logger.is_logging)
                 {
@@ -6369,6 +6750,11 @@ public class MWPlanner : Gtk.Application {
                 MWPLog.message("DEBUG:%s\n", (string)raw);
                 break;
 
+            case MSP.Cmds.RADAR_POS:
+            case MSP.Cmds.COMMON_SET_RADAR_POS:
+                process_radar_pos(raw);
+                break;
+
             default:
                 uint mcmd;
                 string mtxt;
@@ -6425,6 +6811,42 @@ public class MWPlanner : Gtk.Application {
         run_queue();
     }
 
+    void process_radar_pos(uint8 *rp)
+    {
+        uint8 id = *rp++;
+        if(id >= radar_plot.length)
+        {
+            for(var j = radar_plot.length; j < id+1; j++)
+            {
+                var rdrp = RadarPlot();
+                radar_plot += rdrp;
+                radar_plot[j].id = (uint8)j;
+            }
+        }
+        int32 ipos;
+        uint16 ispd;
+
+        radar_plot[id].state = *rp++;
+        rp = deserialise_i32(rp, out ipos);
+        radar_plot[id].latitude = ipos/10000000.0;
+        rp = deserialise_i32(rp, out ipos);
+        radar_plot[id].longitude = ipos/10000000.0;
+        rp = deserialise_i32(rp, out ipos);
+        radar_plot[id].altitude = ipos/100.0;
+        rp = deserialise_u16(rp, out radar_plot[id].heading);
+        rp = deserialise_u16(rp, out ispd);
+        radar_plot[id].speed = ispd/100.0;
+        radar_plot[id].lq = *rp;
+        radar_plot[id].lasttick = nticks;
+/*
+  MWPLog.message("Radar for %u %f %f %.1f %u° %.1f\n",
+  id, radar_plot[id].latitude, radar_plot[id].longitude, radar_plot[id].altitude,
+  radar_plot[id].heading, radar_plot[id].speed, radar_plot[id].lq);
+*/
+        markers.show_radar(id, radar_plot[id]);
+        radarv.update(radar_plot[id], conf.dms);
+    }
+
     private void set_typlab()
     {
         string s;
@@ -6476,7 +6898,7 @@ public class MWPlanner : Gtk.Application {
                     bleet_sans_merci(Alert.GENERAL);
                     navstatus.alert_home_moved();
                     MWPLog.message(
-                        "Established home has jumped %.1fm [%f %f (ex %f %f)]",
+                        "Established home has jumped %.1fm [%f %f (ex %f %f)]\n",
                         d, lat, lon, home_pos.lat, home_pos.lon);
                 }
             }
@@ -6530,6 +6952,10 @@ public class MWPlanner : Gtk.Application {
             }
             sb.append(have_home.to_string());
             MWPLog.message("Set home %f %f (%s)\n", lat, lon, sb.str);
+            mss.h_lat = lat;
+            mss.h_long = lon;
+            mss.h_alt = (int32)alt;
+            mss.home_changed(lat, lon, mss.h_alt);
         }
 
         if((want_special & POSMODE.PH) != 0)
@@ -7168,6 +7594,22 @@ public class MWPlanner : Gtk.Application {
         return fwddev.available;
     }
 
+    private void try_radar_dev()
+    {
+        string fstr = null;
+        if(!rdrdev.available)
+        {
+            if(rdrdev.open (radar_device, 0, out fstr) == true)
+            {
+                MWPLog.message("start radar reader %s\n", radar_device);
+            }
+            else
+            {
+                MWPLog.message("Radar reader %s\n", fstr);
+            }
+        }
+    }
+
     private void connect_serial()
     {
         map_hide_wp();
@@ -7244,9 +7686,9 @@ public class MWPlanner : Gtk.Application {
             {
                 if (autocon == false || autocount == 0)
                 {
-                    mwp_warning_box("Unable to open serial device\n%s\nPlease verify you are a member of the owning group\nTypically \"dialout\" or \"uucp\"\n".printf(estr));
+                    mwp_warning_box("Unable to open serial device\n%s\nPlease verify you are a member of the owning group\nTypically \"dialout\" or \"uucp\"\n".printf(estr), Gtk.MessageType.WARNING, 60);
                 }
-                autocount = ((autocount + 1) % 4);
+                autocount = ((autocount + 1) % 12);
             }
             reboot_status();
         }
@@ -8145,6 +8587,97 @@ public class MWPlanner : Gtk.Application {
         return null;
     }
 
+    private static string? check_virtual(string? os)
+    {
+        string hyper = null;
+        string cmd = null;
+        switch (os)
+        {
+            case "Linux":
+                cmd = "systemd-detect-virt";
+                break;
+            case "FreeBSD":
+                cmd = "sysctl kern.vm_guest";
+                break;
+        }
+
+        if(cmd != null)
+        {
+            try
+            {
+                string strout;
+                int status;
+                Process.spawn_command_line_sync (cmd, out strout,
+                                                 null, out status);
+                if(Process.if_exited(status))
+                {
+                    strout = strout.chomp();
+                    if(strout.length > 0)
+                    {
+                        if(os == "Linux")
+                            hyper = strout;
+                        else
+                        {
+                            var index = strout.index_of("kern.vm_guest: ");
+                            if(index != -1)
+                                hyper = strout.substring(index+"kern.vm_guest: ".length);
+                        }
+                    }
+                }
+            } catch (SpawnError e) {}
+
+            if(hyper != null)
+                return hyper;
+        }
+
+        try {
+            string[] spawn_args = {"dmesg"};
+            int p_stdout;
+            Pid child_pid;
+
+            Process.spawn_async_with_pipes (null,
+                                            spawn_args,
+                                            null,
+                                            SpawnFlags.SEARCH_PATH |
+                                            SpawnFlags.DO_NOT_REAP_CHILD |
+                                            SpawnFlags.STDERR_TO_DEV_NULL,
+                                            null,
+                                            out child_pid,
+                                            null,
+                                            out p_stdout,
+                                            null);
+
+            IOChannel chan = new IOChannel.unix_new (p_stdout);
+            IOStatus eos;
+            string line;
+            size_t length = -1;
+
+            try
+            {
+                for(;;)
+                {
+                    eos = chan.read_line (out line, out length, null);
+                    if(eos == IOStatus.EOF)
+                        break;
+
+                    if(line == null || length == 0)
+                        continue;
+                    line = line.chomp();
+                    var index = line.index_of("Hypervisor");
+                    if(index != -1)
+                    {
+                        hyper = line.substring(index);
+                        break;
+                    }
+                }
+            } catch (IOChannelError e) {}
+            catch (ConvertError e) {}
+            try { chan.shutdown(false); } catch {}
+            Process.close_pid (child_pid);
+        } catch (SpawnError e) {}
+        return hyper;
+    }
+
     public static int main (string[] args)
     {
         var lk = new Locker();
@@ -8209,6 +8742,13 @@ public class MWPlanner : Gtk.Application {
             else
             {
                 MWPLog.message("mwp startup version: %s\n", verstr);
+                string os=null;
+                MWPLog.message("%s\n", Logger.get_host_info(out os));
+                var vstr = check_virtual(os);
+                if(vstr == null || vstr.length == 0)
+                    vstr = "none";
+                MWPLog.message("hypervisor: %s\n", vstr);
+
                 if(fixedopts != null)
                     MWPLog.message("default options: %s\n", fixedopts);
                 Gst.init (ref args);

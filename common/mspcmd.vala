@@ -94,12 +94,14 @@ public class MSP : Object {
         DEBUGMSG = 253,
 		NAME = 10,
 
+        RADAR_POS = 248,
+
         MSPV2 = 255,
         COMMON_TZ = 0x1001,
         COMMON_SET_TZ = 0x1002,
         COMMON_SETTING = 0x1003,
         COMMON_SET_SETTING = 0x1004,
-
+	    COMMON_SET_RADAR_POS = 0x100B,
         INAV_STATUS = 0x2000,
 		ANALOG2 = 0x2002,
 		INAV_MIXER = 0x2010,

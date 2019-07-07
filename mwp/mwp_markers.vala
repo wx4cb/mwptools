@@ -21,6 +21,8 @@ using Clutter;
 
 public class MWPMarkers : GLib.Object
 {
+
+
     public Champlain.PathLayer path;                     // Mission outline
     public Champlain.MarkerLayer markers;                // Mission Markers
     public Champlain.MarkerLayer rlayer;                 // Next WP pos layer
@@ -32,6 +34,8 @@ public class MWPMarkers : GLib.Object
     public Champlain.PathLayer ipath;                    // path from WP initiate to WP1
     private Champlain.PathLayer []rings;                 // range rings layers (per radius)
     private bool rth_land;
+    private Champlain.MarkerLayer rdrmarkers;                // Mission Markers
+    private Champlain.Label[] rplots;
 
     public MWPMarkers(ListBox lb, Champlain.View view, string mkcol ="#ffffff60")
     {
@@ -41,7 +45,11 @@ public class MWPMarkers : GLib.Object
         path = new Champlain.PathLayer();
         hpath = new Champlain.PathLayer();
         ipath = new Champlain.PathLayer();
+        rdrmarkers = new Champlain.MarkerLayer();
 
+        rplots = {};
+
+        view.add_layer(rdrmarkers);
         view.add_layer(rlayer);
         view.add_layer(path);
         view.add_layer(hpath);
@@ -68,6 +76,35 @@ public class MWPMarkers : GLib.Object
         posring = new Champlain.Point.full(80.0, colour);
         rlayer.add_marker(posring);
         posring.hide();
+    }
+
+    public void set_radar_stale(uint8 id)
+    {
+        Clutter.Color less_white = { 0xc0,0xc0,0xc0, 0xf0};
+        rplots[id].set_color (less_white);
+    }
+
+    public void show_radar(uint8 id, RadarPlot r)
+    {
+        if(id >= rplots.length)
+        {
+            string text;
+            if(id < 26)
+                text = "⚙ %c".printf(65+id);
+            else
+                text = "⚙ #%u".printf(id);
+            Clutter.Color black = { 0,0,0, 0xff };
+            var rdrp = new Champlain.Label.with_text (text,"Sans 10",null,null);
+            rplots +=  rdrp;
+            rplots[id].set_alignment (Pango.Alignment.RIGHT);
+            rplots[id].set_text_color(black);
+            rplots[id].set_draggable(false);
+            rplots[id].set_selectable(false);
+            rdrmarkers.add_marker (rplots[id]);
+        }
+        Clutter.Color white = { 0xff,0xff,0xff, 0xff };
+        rplots[id].set_color (white);
+        rplots[id].set_location (r.latitude,r.longitude);
     }
 
     public void set_rth_icon(bool iland)
@@ -303,6 +340,10 @@ public class MWPMarkers : GLib.Object
         var typ = (MSP.Action)cell;
         ls.get_value (iter, ListBox.WY_Columns.IDX, out cell);
         var no = (string)cell;
+        ls.get_value (iter, ListBox.WY_Columns.INT2, out cell);
+        var p2 = (int)cell;
+        if (typ == MSP.Action.WAYPOINT && p2 > 0)
+            typ = MSP.Action.POSHOLD_TIME;
         string text;
         Clutter.Color colour;
         Clutter.Color black = { 0,0,0, 0xff };

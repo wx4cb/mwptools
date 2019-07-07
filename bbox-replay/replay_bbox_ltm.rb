@@ -25,7 +25,14 @@ require 'csv'
 require 'optparse'
 require 'socket'
 require 'open3'
-require 'json'
+
+begin
+  require 'json'
+  have_js = true
+rescue LoadError
+  have_js = false
+end
+
 require_relative 'inav_states'
 
 begin
@@ -463,8 +470,8 @@ def encode_stats r,inavers,armed=1
     vbat = r[:vbat].to_f / 100.0
   end
 
-  mah = (r.has_key? :energycumulative_mah) ? r[:energycumulative_mah].to_i : 0
-
+  mah = (r.has_key? :energycumulative_mah) ? r[:energycumulative_mah].to_i :
+    (r.has_key? :energycumulativevirtual_mah) ? r[:energycumulativevirtual_mah].to_i : 0
   if mah > 0
     mah = mah & 0xffff
   else
@@ -514,6 +521,9 @@ def encode_amps r
     amps = r[:amperagelatest_a].to_f
   elsif r.has_key? :amperage_a
     amps = r[:amperage_a].to_f
+  elsif r.has_key? :currentvirtual_a
+    amps = r[:currentvirtual_a].to_f
+
   end
   if amps && amps > 0
     msg='$Ta'
@@ -671,13 +681,15 @@ scan = nil
 decoder="blackbox_decode"
 nobaro = nil
 
-pref_fn = File.join(ENV["HOME"],".config", "mwp", "replay_ltm.json")
-if File.exist? pref_fn
-  json = IO.read(pref_fn)
-  prefs = JSON.parse(json, {:symbolize_names => true})
-  decl = prefs[:declination].to_f
-  autotyp = prefs[:auto]
-  nobaro = prefs[:nobaro]
+if have_js
+  pref_fn = File.join(ENV["HOME"],".config", "mwp", "replay_ltm.json")
+  if File.exist? pref_fn
+    json = IO.read(pref_fn)
+    prefs = JSON.parse(json, {:symbolize_names => true})
+    decl = prefs[:declination].to_f
+    autotyp = prefs[:auto]
+    nobaro = prefs[:nobaro]
+  end
 end
 
 ARGV.options do |opt|
@@ -870,6 +882,9 @@ cmd << " --index #{idx}"
 cmd << " --merge-gps"
 unless decl.nil?
   cmd << " --declination-dec #{decl}"
+end
+if ENV['MWP_BB_ARGS']
+  cmd << " #{ENV['MWP_BB_ARGS']}"
 end
 cmd << " --stdout"
 cmd << " 2>#{nul}"
