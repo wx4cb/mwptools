@@ -1,6 +1,7 @@
 #!/bin/sh
 ## Starting point for Ubuntu / Debian packages ...
 
+
 CONF=$1
 CONFIRM=
 [ -n "$CONF" ] && CONFIRM=-y
@@ -18,10 +19,9 @@ apt $CONFIRM install libgdl-3-dev \
     libespeak-dev \
     libgudev-1.0-dev \
     libgstreamer1.0-dev \
-    libvte-2.91-dev
+    libvte-2.91-dev \
+    libncurses5-dev
 
-# vanity, prettier terminal progress bars (fcset, flashdl)
-apt $CONFIRM install libncurses5-dev
 
 ## For libvala-dev there may be valac version specific deb
 ## check the vala version with:
@@ -32,14 +32,17 @@ apt $CONFIRM install libncurses5-dev
 ## e.g.
 # apt $CONFIRM install libvala-0.44-dev
 
-## and for replay_bbox_ltm.rb
 ## ruby version 2 or later
+
+## For some ARM boards, without full OpenGL, you may need
+## egl1-mesa - this can also be handy for laptops
 
 apt $CONFIRM install ruby ruby-json
 
 ## For some ARM boards, without full OpenGL, you may need
 
 # apt $CONFIRM install libegl1-mesa-dev
+
 ## (or something like that)
 
 ## if you want to use speech-dispatcher instead of espeak for voice
@@ -47,6 +50,7 @@ apt $CONFIRM install ruby ruby-json
 ## gsettings set org.mwptools.planner speech-api 'speechd'
 ## or (default)
 ## gsettings set org.mwptools.planner speech-api 'espeak'
+
 
 # apt $CONFIRM install libspeechd-dev
 
@@ -57,6 +61,7 @@ apt $CONFIRM install ruby ruby-json
 apt $CONFIRM install gnuplot ruby-nokogiri
 
 ## To use KMZ as an overlay format, you need 'unzip
+
 #apt $CONFIRM install unzip
 
 ## Shallow clone mwp ....
@@ -67,9 +72,10 @@ apt $CONFIRM install gnuplot ruby-nokogiri
 ## You must install the blackbox utilities
 ## https://github.com/iNavFlight/blackbox-tools in order to replay
 ## blackbox logs.
-# git clone --depth 1  https://github.com/iNavFlight/blackbox-tools
-# cd blackbox-tools
-# make && sudo cp obj/blackbox_decode obj/blackbox_render /usr/local/bin/
+cd ..
+git clone --depth 1  https://github.com/iNavFlight/blackbox-tools
+cd blackbox-tools
+make && sudo cp obj/blackbox_decode obj/blackbox_render /usr/local/bin/
 
 ## and you can use this file to install everything:)
 #
