@@ -2,7 +2,7 @@
 <interface>
   <menu id="menubar">
     <submenu>
-      <attribute name="label">_Akte</attribute>
+      <attribute name="label">_Feile</attribute>
       <section>
         <item>
           <attribute name="label">Öffnen Sie Mission</attribute>
